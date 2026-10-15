@@ -1,66 +1,30 @@
-// Athena API Client
-import axios, { AxiosError } from 'axios';
-import { config } from './config';
-
-interface ApiError {
-  message: string;
-  code?: string;
-  status?: number;
-}
-
-function createApiClient() {
-  const client = axios.create({
-    baseURL: config.apiUrl,
-    timeout: config.requestTimeout,
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.authToken}`,
-    },
-  });
-
-  client.interceptors.response.use(
-    (response) => response,
-    (error: AxiosError<ApiError>) => {
-      if (error.response) {
-        const status = error.response.status;
-        const message = error.response.data?.message || error.message;
-        console.error(`[API] Error ${status}: ${message}`);
-        return Promise.reject(new AthenaApiError(message, status, error.response.data?.code));
-      } else if (error.request) {
-        console.error('[API] Network error:', error.message);
-        return Promise.reject(new AthenaApiError('Network error', 0));
-      }
-      return Promise.reject(error);
-    }
-  );
-
-  return client;
-}
+import type { Config } from './config.js';
 
 export class AthenaApiError extends Error {
-  public statusCode: number;
-  public errorCode?: string;
-
-  constructor(message: string, statusCode: number, errorCode?: string) {
-    super(message);
-    this.name = 'AthenaApiError';
-    this.statusCode = statusCode;
-    this.errorCode = errorCode;
-  }
+  constructor(public statusCode: number, public errorCode: string, message: string, public requestId?: string) { super(message); }
 }
 
-export const api = createApiClient();
-
-export function buildQueryString(params: Record<string, any>): string {
-  const searchParams = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      if (Array.isArray(value)) {
-        value.forEach((v) => searchParams.append(key, String(v)));
-      } else {
-        searchParams.append(key, String(value));
-      }
+export function createApi(config: Config) {
+  return async (method: string, path: string, body?: unknown, options: {idempotencyKey?: string; legacy?: boolean} = {}) => {
+    if (options.legacy && !config.authToken) throw new AthenaApiError(401, 'legacy_auth_required', 'This mobile compatibility tool requires AUTH_TOKEN. Core v1 tools use ATHENA_API_KEY.');
+    const headers: Record<string, string> = {'Content-Type': 'application/json'};
+    if (!options.legacy && config.apiKey) headers['x-api-key'] = config.apiKey;
+    else headers.Authorization = `Bearer ${config.authToken}`;
+    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+    let response: Response;
+    try {
+      response = await fetch(config.apiUrl + path, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(config.requestTimeout), redirect: 'error'});
+    } catch {
+      throw new AthenaApiError(0, 'transport_error', 'Request failed or timed out. Outcome may be unknown. For v1 writes retry only with the same idempotency_key and payload; reconcile legacy writes before retrying.');
     }
-  });
-  return searchParams.toString();
+    const content = await response.text();
+    let data: any;
+    try { data = content ? JSON.parse(content) : null; } catch { throw new AthenaApiError(response.status, 'invalid_response', 'API returned a non-JSON response'); }
+    if (!response.ok) {
+      const error = data?.error || data?.detail?.error;
+      throw new AthenaApiError(response.status, error?.code || 'api_error', error?.message || (typeof data?.detail === 'string' ? data.detail : `HTTP ${response.status}: request rejected`), error?.request_id);
+    }
+    return data;
+  };
 }
+export type Api = ReturnType<typeof createApi>;

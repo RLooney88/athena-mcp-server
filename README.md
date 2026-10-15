@@ -1,205 +1,73 @@
-# Athena MCP Server
+# Athena MCP server
 
-A Model Context Protocol (MCP) server that wraps Athena API endpoints for task management. Provides AI assistants with standardized access to Athena's task management features.
+A small stdio adapter to Athena's existing HTTP API. It has no database access, workflow engine, business rules, or automatic write retries.
 
-## Features
+## Install and run
 
-- Task management (CRUD operations)
-- Comments and discussions
-- Subtask management
-- Deliverable linking
-- User search and categories
-- Review workflow (approve/reject)
-- Environment-based configuration
-- Comprehensive mock data for offline testing
+Requires Node 22+ and an Athena backend containing the API contract repair in `docs/api-mcp-contract.md`.
 
-## Quick Start
-
-### 1. Install Dependencies
-
-```bash
-cd athena-mcp-server
-npm install
-```
-
-### 2. Configure Environment
-
-```bash
-cp .env.example .env
-# Edit .env with your configuration
-```
-
-### 3. Build and Test
-
-```bash
+```sh
+npm ci
 npm run build
-npm run test:mock  # Test with mock data
+cp .env.example .env
+# Set API_URL and ATHENA_API_KEY privately in .env.
+node --env-file=.env dist/server.js
 ```
 
-### 4. Run Server
+For an MCP host, configure **node** with absolute paths to `--env-file=/private/path/.env` and `/path/athena-mcp-server/dist/server.js`. Do not use `npm start` as the protocol command: npm can print lifecycle output to stdout. The node entry point emits only MCP protocol messages on stdout. Diagnostics use stderr.
 
-```bash
-npm run dev  # Development with mock data
-# OR
-npm start    # Production (requires real API)
+The transport is stdio: the host starts one process. No separate public web server, PM2 daemon, Redis, or agent framework is needed. Remote hosts can use Athena's HTTP API directly; this package does not claim remote MCP/OAuth support.
+
+## Credentials
+
+- `API_URL`: backend origin, such as `https://api.example.com` (no `/api` suffix). HTTPS required outside loopback.
+- `ATHENA_API_KEY`: a scoped key issued by Athena's existing Settings API-key management. Only a hash is stored there; existing revoke/rotate controls apply.
+- `AUTH_TOKEN`: optional existing Athena JWT for six mobile-only compatibility tools, or JWT fallback for v1. API keys are never sent as mobile JWTs.
+- `REQUEST_TIMEOUT`: milliseconds, default 30000, range 1..120000.
+- Legacy `PROD_API_URL`/`TEST_API_URL` and `PROD_AUTH_TOKEN`/`TEST_AUTH_TOKEN` aliases are supported when NODE_ENV selects that environment. Prefer the single API_URL/ATHENA_API_KEY configuration.
+
+Use the smallest required scopes: `tasks:read`, `tasks:write`, `comments:write`, `projects:read`, `clients:read`, `search:read`. Authentication and authorization are enforced by the API, not guessed by MCP. Keys are never printed by this adapter.
+
+There is **no automatic mock mode**, including NODE_ENV=test. Tests explicitly start fixture HTTP servers or the disposable backend.
+
+## Core v1 tools
+
+- `athena_me`
+- `athena_list_tasks`, `athena_get_task`, `athena_create_task`, `athena_update_task`
+- `athena_add_comment`, `athena_get_comments`, `athena_create_deliverable`
+- `athena_list_projects`, `athena_get_project`, `athena_list_project_stages`
+- `athena_list_companies`, `athena_list_contacts`, `athena_search`
+
+Tool discovery publishes the exact validated JSON schemas. Unknown fields are rejected instead of silently discarded.
+
+### Writes and retries
+
+Every core write requires `idempotency_key`: a caller-generated stable ID for **one intended action**. Reuse the same key and payload after a timeout. Do not generate a new key merely because the response was lost. Reusing a key with a changed payload returns 409.
+
+`athena_update_task` also requires `expected_updated_at` copied exactly from `athena_get_task`. A stale version returns `stale_revision` (409). Read and reconcile the latest record before issuing a new intended update. MCP does not auto-fetch a newer version and overwrite it.
+
+Task fields use the v1 contract: `title`, `project_id`, `client_id`, `stage_id`, `assignees` (UUID array), timezone-aware `due_date`, and priority `Low|Normal|High|Critical`. Status names remain backend/project-defined strings. Read project stages before setting stage_id.
+
+Comments retain the MCP `content` argument and translate it to API `body`. Deliverables require a hosted HTTP(S) `url`; local file paths are not uploaded. Use Athena's existing upload flow separately before attaching a hosted file.
+
+List responses retain API `data`/`meta.next_cursor`. Continue until next_cursor is null. Offset pagination is not a snapshot while records are changing.
+
+### Existing mobile compatibility tools
+
+The original `athena_create_subtask`, `athena_list_subtasks`, `athena_search_users`, `athena_get_categories`, `athena_approve_task`, and `athena_reject_task` remain available and explicitly labeled in discovery. They require AUTH_TOKEN because those operations do not have v1 equivalents. Subtask title is correctly translated to mobile `name`. Review actions use backend permissions; they do not invent status transitions.
+
+These six calls **do not acquire the new v1 retry/revision guarantees**. The adapter never retries them automatically. Reconcile an uncertain write before retrying. Removing their existing capabilities or duplicating their business rules in MCP would be a larger, separate migration. Their mappings are tested; full live mobile workflows are not claimed verified by the v1 integration test.
+
+## Compatibility changes from the old prototype
+
+Core task/comment/deliverable tools now use `/api/v1` rather than `/api/mobile`. Replace old `assignee_id` with `assignees`, lowercase priorities with canonical priorities, flat work_for fields with project/client IDs, and task `category_id` with supported API fields only. `include_completed`/`needs_review` are not silently emulated on v1; use supported list filters. Reconnect/reload tool discovery after upgrading. Update calls need expected_updated_at and all core writes need idempotency_key. Fake-data runtime files and obsolete mock tests were removed.
+
+## Verification
+
+```sh
+npm test
 ```
 
-## Available Tools
+This builds TypeScript and checks validation, configuration, request mapping, HTTP errors and a real SDK stdio handshake/tool call against a fixture HTTP server. The official [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x) is pinned in the lockfile; the maintained 1.x API avoids an unrelated protocol migration.
 
-| Tool | Description |
-|------|-------------|
-| `athena_list_tasks` | List and filter tasks with pagination |
-| `athena_get_task` | Get task details by ID |
-| `athena_create_task` | Create a new task |
-| `athena_update_task` | Update an existing task |
-| `athena_add_comment` | Add a comment to a task |
-| `athena_get_comments` | Get comments for a task |
-| `athena_create_subtask` | Create a subtask |
-| `athena_list_subtasks` | List all subtasks for a task |
-| `athena_create_deliverable` | Create a deliverable (link/file) |
-| `athena_search_users` | Search for users |
-| `athena_get_categories` | Get all categories |
-| `athena_approve_task` | Approve a task needing review |
-| `athena_reject_task` | Reject a task needing review |
-
-## Environment Configuration
-
-### Development (Default)
-
-Uses mock data for testing without real API:
-```env
-NODE_ENV=development
-API_URL=http://localhost:3000
-AUTH_TOKEN=optional_token
-```
-
-### Testing
-
-Connect to test environment:
-```env
-NODE_ENV=test
-TEST_API_URL=http://test-api.athena.example.com
-TEST_AUTH_TOKEN=your_test_token
-```
-
-### Production
-
-Full production deployment:
-```env
-NODE_ENV=production
-PROD_API_URL=https://api.athena.example.com
-PROD_AUTH_TOKEN=your_production_token
-```
-
-## Testing with Mock Data
-
-The server includes comprehensive mock data:
-
-- **Users**: 3 sample users (John, Jane, Bob)
-- **Categories**: 4 categories (Development, Design, Marketing, Operations)
-- **Tasks**: 5 sample tasks with various statuses
-- **Subtasks**: Sample subtasks for task-1
-- **Comments**: Sample discussions
-- **Deliverables**: Links and files
-
-To test:
-```bash
-npm run test:mock  # Run validation tests
-npm run dev        # Start server with mock data
-```
-
-## API Endpoints Wrapped
-
-Based on `athena_flutter/lib/features/tasks/task_service.dart`:
-
-- `GET /api/mobile/tasks` - List tasks with filters
-- `GET /api/mobile/tasks/:id` - Get task details
-- `POST /api/mobile/tasks` - Create task
-- `PATCH /api/mobile/tasks/:id` - Update task
-- `GET /api/mobile/tasks/:id/comments` - Get comments
-- `POST /api/mobile/tasks/:id/comments` - Add comment
-- `GET /api/mobile/tasks/:id/subtasks` - Get subtasks
-- `POST /api/mobile/tasks/:id/subtasks` - Create subtask
-- `POST /api/mobile/tasks/:id/deliverables` - Create deliverable
-- `GET /api/mobile/users?q=...` - Search users
-- `GET /api/mobile/categories` - Get categories
-- `POST /api/mobile/tasks/:id/review/approve` - Approve task
-- `POST /api/mobile/tasks/:id/review/reject` - Reject task
-
-## Project Structure
-
-```
-athena-mcp-server/
-├── src/
-│   ├── server.ts          # Main MCP server
-│   ├── tools.ts           # Tool definitions and handlers
-│   ├── api.ts             # API client
-│   ├── config.ts          # Environment configuration
-│   ├── validation.ts      # Input validation with Zod
-│   ├── types.ts           # TypeScript type definitions
-│   ├── mock-data.ts       # Mock data and data store
-│   └── index.test.ts      # Test suite
-├── package.json           # Dependencies
-├── tsconfig.json          # TypeScript config
-├── jest.config.js         # Jest test config
-├── .env.example           # Environment template
-├── README.md              # Documentation
-├── DEPLOYMENT.md          # Deployment guide
-└── quickstart.sh          # Quick start script
-```
-
-## Input Validation
-
-All tools validate input using Zod schemas:
-
-- **Title**: 1-500 characters required
-- **Description**: Up to 5000 characters
-- **Priority**: low, medium, high, critical
-- **Status**: pending, in_progress, completed, archived
-- **Pagination**: cursor + limit (max 100)
-- **Search query**: Minimum 1 character
-
-## Error Handling
-
-Clear error messages for:
-- Validation errors (field-specific)
-- API errors (HTTP status + message)
-- Network errors
-- Resource not found
-
-## Testing
-
-```bash
-npm test              # Run all tests with coverage
-npm run test:mock     # Run tests against mock data
-```
-
-## Deployment
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment guide including:
-
-- Prerequisites
-- Pre-deployment checklist
-- Deployment methods (PM2, systemd, Docker)
-- Environment configuration
-- Security considerations
-- Monitoring and logging
-- Rollback procedures
-
-## Requirements
-
-- Node.js 18.0 or higher
-- npm or yarn
-- Athena API access (for non-mock usage)
-
-## Security
-
-- Environment variables for all secrets
-- No hardcoded credentials
-- HTTPS for API connections
-- Token rotation recommended
-- Never log sensitive data
-
-## License
-
-ISC
+For **MCP → real Athena routes → PostgreSQL** acceptance, follow `Athena-Context/docs/api-mcp-contract.md`. That suite runs discovery, concurrent create/retry, read-back, update/retry, stale rejection, cross-team rejection, pagination, comments and deliverables. It uses a disposable loopback PostgreSQL database and does not call providers.
