@@ -1,165 +1,48 @@
-// MCP Tool Definitions and Handlers
-import { api, buildQueryString } from './api.js';
-import { config } from './config.js';
-import { isTest } from './config.js';
-import { mockStore } from './mock-data.js';
-import { validateInput, taskListParamsSchema, createTaskSchema, updateTaskSchema, createCommentSchema, createSubtaskSchema, createDeliverableSchema, searchUsersSchema } from './validation.js';
-import { Task, Subtask, Comment, Deliverable, User, Category } from './types.js';
+import { z } from 'zod';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Api } from './api.js';
 
-const toolHandlers: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
-  athena_list_tasks: async (args) => {
-    const validation = validateInput(taskListParamsSchema, args);
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    const params = validation.data;
-    if (isTest()) {
-      const tasks = mockStore.getTasks({ include_completed: params.include_completed, needs_review: params.needs_review });
-      return { tasks, has_more: false };
-    }
-    const queryString = buildQueryString({ cursor: params.cursor, limit: params.limit, include_completed: params.include_completed, needs_review: params.needs_review });
-    const response = await api.get(`/api/mobile/tasks${queryString ? `?${queryString}` : ''}`);
-    return response.data;
-  },
-
-  athena_get_task: async (args) => {
-    const id = args.id as string;
-    if (!id) throw new Error('Task ID is required');
-    if (isTest()) {
-      const task = mockStore.getTask(id);
-      if (!task) throw new Error(`Task not found: ${id}`);
-      return task;
-    }
-    const response = await api.get(`/api/mobile/tasks/${id}`);
-    return response.data;
-  },
-
-  athena_create_task: async (args) => {
-    const validation = validateInput(createTaskSchema, args);
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    if (isTest()) return mockStore.createTask(validation.data);
-    const response = await api.post('/api/mobile/tasks', validation.data);
-    return response.data;
-  },
-
-  athena_update_task: async (args) => {
-    const id = args.id as string;
-    if (!id) throw new Error('Task ID is required');
-    const validation = validateInput(updateTaskSchema, args);
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    if (isTest()) {
-      const task = mockStore.updateTask(id, validation.data);
-      if (!task) throw new Error(`Task not found: ${id}`);
-      return task;
-    }
-    const response = await api.patch(`/api/mobile/tasks/${id}`, validation.data);
-    return response.data;
-  },
-
-  athena_add_comment: async (args) => {
-    const taskId = args.task_id as string;
-    if (!taskId) throw new Error('Task ID is required');
-    const validation = validateInput(createCommentSchema, { content: args.content });
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    if (isTest()) return mockStore.addComment(taskId, validation.data.content);
-    const response = await api.post(`/api/mobile/tasks/${taskId}/comments`, validation.data);
-    return response.data;
-  },
-
-  athena_get_comments: async (args) => {
-    const taskId = args.task_id as string;
-    if (!taskId) throw new Error('Task ID is required');
-    if (isTest()) {
-      const comments = mockStore.getComments(taskId);
-      return { comments, has_more: false };
-    }
-    const cursor = args.cursor as string | undefined;
-    const limit = args.limit ? parseInt(String(args.limit), 10) : undefined;
-    const queryString = buildQueryString({ cursor, limit });
-    const response = await api.get(`/api/mobile/tasks/${taskId}/comments${queryString ? `?${queryString}` : ''}`);
-    return response.data;
-  },
-
-  athena_create_subtask: async (args) => {
-    const taskId = args.task_id as string;
-    if (!taskId) throw new Error('Task ID is required');
-    const validation = validateInput(createSubtaskSchema, { title: args.title });
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    if (isTest()) return mockStore.createSubtask(taskId, validation.data.title);
-    const response = await api.post(`/api/mobile/tasks/${taskId}/subtasks`, validation.data);
-    return response.data;
-  },
-
-  athena_list_subtasks: async (args) => {
-    const taskId = args.task_id as string;
-    if (!taskId) throw new Error('Task ID is required');
-    if (isTest()) return mockStore.getSubtasks(taskId);
-    const response = await api.get(`/api/mobile/tasks/${taskId}/subtasks`);
-    return response.data;
-  },
-
-  athena_create_deliverable: async (args) => {
-    const taskId = args.task_id as string;
-    if (!taskId) throw new Error('Task ID is required');
-    const validation = validateInput(createDeliverableSchema, { type: args.type, title: args.title, url: args.url, file_path: args.file_path });
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    if (isTest()) return mockStore.createDeliverable(taskId, validation.data);
-    const response = await api.post(`/api/mobile/tasks/${taskId}/deliverables`, validation.data);
-    return response.data;
-  },
-
-  athena_search_users: async (args) => {
-    const validation = validateInput(searchUsersSchema, { q: args.q, limit: args.limit });
-    if (!validation.success) throw new Error(`Invalid arguments: ${validation.error}`);
-    if (isTest()) return { users: mockStore.searchUsers(validation.data.q) };
-    const queryString = buildQueryString({ q: validation.data.q, limit: validation.data.limit });
-    const response = await api.get(`/api/mobile/users?${queryString}`);
-    return response.data;
-  },
-
-  athena_get_categories: async () => {
-    if (isTest()) return mockStore.getCategories();
-    const response = await api.get('/api/mobile/categories');
-    return response.data;
-  },
-
-  athena_approve_task: async (args) => {
-    const id = args.id as string;
-    if (!id) throw new Error('Task ID is required');
-    if (isTest()) {
-      const task = mockStore.updateTask(id, { status: 'completed', needs_review: false });
-      if (!task) throw new Error(`Task not found: ${id}`);
-      return { success: true };
-    }
-    await api.post(`/api/mobile/tasks/${id}/review/approve`);
-    return { success: true };
-  },
-
-  athena_reject_task: async (args) => {
-    const id = args.id as string;
-    if (!id) throw new Error('Task ID is required');
-    if (isTest()) {
-      const task = mockStore.updateTask(id, { needs_review: false });
-      if (!task) throw new Error(`Task not found: ${id}`);
-      return { success: true };
-    }
-    await api.post(`/api/mobile/tasks/${id}/review/reject`);
-    return { success: true };
-  },
+const id = z.string().uuid();
+const text = z.string().trim().min(1).max(500);
+const timestamp = z.iso.datetime({offset: true});
+const key = z.string().min(1).max(200).describe('Stable key for this intended write. Reuse the same key and payload when retrying.');
+const page = {cursor: z.string().regex(/^\d+$/).optional(), limit: z.number().int().min(1).max(100).optional()};
+const taskFields = {
+  title: text, description: z.string().max(50000).nullable().optional(),
+  status: z.string().min(1).max(100).optional(), priority: z.enum(['Low','Normal','High','Critical']).optional(),
+  project_id: id.nullable().optional(), client_id: id.nullable().optional(), stage_id: id.nullable().optional(),
+  assignees: z.array(id).max(100).optional(), due_date: timestamp.nullable().optional(),
 };
-
-const tools = [
-  { name: 'athena_list_tasks', description: 'List and filter tasks from Athena. Supports pagination and filtering.', inputSchema: { type: 'object', properties: { cursor: { type: 'string' }, limit: { type: 'number' }, include_completed: { type: 'boolean' }, needs_review: { type: 'boolean' } } } },
-  { name: 'athena_get_task', description: 'Get detailed information about a specific task by ID.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
-  { name: 'athena_create_task', description: 'Create a new task in Athena.', inputSchema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] }, assignee_id: { type: 'string' }, category_id: { type: 'string' }, due_date: { type: 'string' } }, required: ['title'] } },
-  { name: 'athena_update_task', description: 'Update an existing task in Athena.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'archived'] }, priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] }, assignee_id: { type: 'string' }, category_id: { type: 'string' }, due_date: { type: 'string' } }, required: ['id'] } },
-  { name: 'athena_add_comment', description: 'Add a comment to a task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, content: { type: 'string' } }, required: ['task_id', 'content'] } },
-  { name: 'athena_get_comments', description: 'Get comments for a task with pagination.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, cursor: { type: 'string' }, limit: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'athena_create_subtask', description: 'Create a subtask for a task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, title: { type: 'string' } }, required: ['task_id', 'title'] } },
-  { name: 'athena_list_subtasks', description: 'List all subtasks for a task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] } },
-  { name: 'athena_create_deliverable', description: 'Create a deliverable (link or file) for a task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, type: { type: 'string', enum: ['link', 'file'] }, title: { type: 'string' }, url: { type: 'string' }, file_path: { type: 'string' } }, required: ['task_id', 'type', 'title'] } },
-  { name: 'athena_search_users', description: 'Search for users by name or email.', inputSchema: { type: 'object', properties: { q: { type: 'string' }, limit: { type: 'number' } }, required: ['q'] } },
-  { name: 'athena_get_categories', description: 'Get all task categories.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'athena_approve_task', description: 'Approve a task that needs review.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
-  { name: 'athena_reject_task', description: 'Reject a task that needs review.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+const query = (a: Record<string, unknown>) => { const q = new URLSearchParams(); for (const [k,v] of Object.entries(a)) if (v !== undefined) q.set(k, String(v)); return q.size ? `?${q}` : ''; };
+type Definition = {name:string; description:string; schema:z.ZodObject; method:string; path:(a:any)=>string; body?:(a:any)=>unknown; legacy?:boolean};
+const definitions: Definition[] = [
+  {name:'athena_me', description:'Inspect authenticated identity and scopes.', schema:z.strictObject({}), method:'GET', path:()=>'/api/v1/me'},
+  {name:'athena_list_tasks', description:'List team tasks. Follow meta.next_cursor until null. Filters are exact; results may change while paging.', schema:z.strictObject({...page, project_id:id.optional(),client_id:id.optional(),assignee_id:id.optional(),status:z.string().optional(),stage_id:id.optional(),due_before:timestamp.optional(),updated_after:timestamp.optional()}), method:'GET',path:a=>'/api/v1/tasks'+query(a)},
+  {name:'athena_get_task',description:'Read a task, including updated_at for optimistic updates.',schema:z.strictObject({id}),method:'GET',path:a=>`/api/v1/tasks/${a.id}`},
+  {name:'athena_create_task',description:'Create a task once per idempotency_key. Uses v1 fields, not mobile fields.',schema:z.strictObject({...taskFields,idempotency_key:key}),method:'POST',path:()=>'/api/v1/tasks',body:({idempotency_key,...body})=>body},
+  {name:'athena_update_task',description:'Update a task using expected_updated_at from its last read. On 409, read and reconcile before making a new write.',schema:z.strictObject({...taskFields,title:text.optional(),id,expected_updated_at:timestamp,idempotency_key:key}),method:'PATCH',path:a=>`/api/v1/tasks/${a.id}`,body:({id,idempotency_key,...body})=>body},
+  {name:'athena_add_comment',description:'Add a task comment once per idempotency_key.',schema:z.strictObject({task_id:id,content:z.string().trim().min(1).max(10000),parent_comment_id:id.optional(),idempotency_key:key}),method:'POST',path:a=>`/api/v1/tasks/${a.task_id}/comments`,body:a=>({body:a.content,parent_comment_id:a.parent_comment_id})},
+  {name:'athena_get_comments',description:'Read task comments, following meta.next_cursor.',schema:z.strictObject({task_id:id,...page}),method:'GET',path:({task_id,...a})=>`/api/v1/tasks/${task_id}/comments`+query(a)},
+  {name:'athena_create_deliverable',description:'Attach a hosted URL to a task. Local file paths are not uploaded. Retry using the same key.',schema:z.strictObject({task_id:id,title:text,url:z.url({protocol:/^https?$/}),description:z.string().max(5000).optional(),deliverable_type:z.enum(['link','file','image','video','pdf','document','spreadsheet']).optional(),idempotency_key:key}),method:'POST',path:a=>`/api/v1/tasks/${a.task_id}/deliverables`,body:({task_id,idempotency_key,...a})=>a},
+  {name:'athena_list_projects',description:'List projects in the authenticated team.',schema:z.strictObject({...page,client_id:id.optional(),status:z.string().optional()}),method:'GET',path:a=>'/api/v1/projects'+query(a)},
+  {name:'athena_get_project',description:'Get a project by ID.',schema:z.strictObject({id}),method:'GET',path:a=>`/api/v1/projects/${a.id}`},
+  {name:'athena_list_project_stages',description:'Get valid stage IDs for a project before assigning a task.',schema:z.strictObject({project_id:id}),method:'GET',path:a=>`/api/v1/projects/${a.project_id}/stages`},
+  {name:'athena_list_companies',description:'List team companies.',schema:z.strictObject({...page}),method:'GET',path:a=>'/api/v1/companies'+query(a)},
+  {name:'athena_list_contacts',description:'List contacts, optionally scoped to a company.',schema:z.strictObject({...page,company_id:id.optional()}),method:'GET',path:a=>'/api/v1/contacts'+query(a)},
+  {name:'athena_search',description:'Search tasks, projects or clients. Requires search:read.',schema:z.strictObject({query:z.string().trim().min(1).max(500),entities:z.array(z.enum(['tasks','projects','clients'])).optional(),limit:z.number().int().min(1).max(100).optional()}),method:'POST',path:()=>'/api/v1/search',body:a=>a},
+  // Existing mobile-only operations remain compatibility tools, not duplicate business logic.
+  {name:'athena_create_subtask',description:'Mobile compatibility: requires AUTH_TOKEN. Creates a subtask. No retry guarantee; reconcile an uncertain response before retrying.',schema:z.strictObject({task_id:id,title:text}),method:'POST',path:a=>`/api/mobile/tasks/${a.task_id}/subtasks`,body:a=>({name:a.title}),legacy:true},
+  {name:'athena_list_subtasks',description:'Mobile compatibility: requires AUTH_TOKEN. List subtasks.',schema:z.strictObject({task_id:id}),method:'GET',path:a=>`/api/mobile/tasks/${a.task_id}/subtasks`,legacy:true},
+  {name:'athena_search_users',description:'Mobile compatibility: requires AUTH_TOKEN. Search users.',schema:z.strictObject({q:z.string().min(1),limit:z.number().int().min(1).max(50).optional()}),method:'GET',path:a=>'/api/mobile/users'+query(a),legacy:true},
+  {name:'athena_get_categories',description:'Mobile compatibility: requires AUTH_TOKEN. Read categories.',schema:z.strictObject({}),method:'GET',path:()=>'/api/mobile/categories',legacy:true},
+  {name:'athena_approve_task',description:'Mobile compatibility: requires AUTH_TOKEN and backend review permission. Reconcile uncertain outcomes before retrying.',schema:z.strictObject({id}),method:'POST',path:a=>`/api/mobile/tasks/${a.id}/review/approve`,legacy:true},
+  {name:'athena_reject_task',description:'Mobile compatibility: requires AUTH_TOKEN and backend review permission. Reconcile uncertain outcomes before retrying.',schema:z.strictObject({id}),method:'POST',path:a=>`/api/mobile/tasks/${a.id}/review/reject`,legacy:true},
 ];
 
-export { tools, toolHandlers };
+export const tools: Tool[] = definitions.map(d=>({name:d.name,description:d.description,inputSchema:z.toJSONSchema(d.schema) as Tool['inputSchema']}));
+export async function callTool(api:Api,name:string,args:unknown) {
+  const def=definitions.find(d=>d.name===name);
+  if (!def) throw new Error(`Unknown tool: ${name}`);
+  const a=def.schema.parse(args) as Record<string,any>;
+  return api(def.method,def.path(a),def.body?.(a),{legacy:def.legacy,idempotencyKey:a.idempotency_key});
+}
